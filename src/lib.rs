@@ -1,16 +1,19 @@
-mod memory;
-
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod memory;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::{open_process, Auto, ProcessBlock, ToProcessBlock};
 
     #[test]
     fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+        let handle = open_process(13900).unwrap();
+
+        let process_block: ProcessBlock<Auto> = handle.into_process_block();
+
+        let memory_block = process_block.memory_block(vec![0x6A9EC0,0x768,0x5560]);
+
+        memory_block.write(4096).unwrap();
     }
 }
+
+include!("process.rs");
