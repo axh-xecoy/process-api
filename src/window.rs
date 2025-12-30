@@ -152,6 +152,25 @@ pub fn windows_by_pid(pid: u32) -> Result<Vec<HWND>> {
     Ok(ctx.hwnds)
 }
 
+pub fn windows_by_process_name(name: &str) -> Result<Vec<HWND>> {
+    let processes = crate::process::find_processes_by_name(name)?;
+    let mut hwnds = Vec::new();
+    for p in processes {
+        hwnds.extend(windows_by_pid(p.pid)?);
+    }
+    Ok(hwnds)
+}
+
+pub fn first_visible_window_by_pid(pid: u32) -> Result<Option<HWND>> {
+    let hwnds = windows_by_pid(pid)?;
+    Ok(hwnds.into_iter().find(|h| is_window_visible(*h)))
+}
+
+pub fn first_visible_window_by_process_name(name: &str) -> Result<Option<HWND>> {
+    let hwnds = windows_by_process_name(name)?;
+    Ok(hwnds.into_iter().find(|h| is_window_visible(*h)))
+}
+
 fn keyboard_input(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,

@@ -4,7 +4,9 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{BOOL, Error, Result};
 
-/// 打开进程
+pub mod list;
+pub use list::{find_processes_by_name, list_processes, ProcessInfo};
+
 pub fn open_process_handle(pid: u32) -> Result<HANDLE> {
     unsafe { OpenProcess(PROCESS_ALL_ACCESS, false, pid) }
 }
@@ -92,3 +94,4 @@ pub fn open_process(pid: u32) -> Result<ProcessBlock> {
     let handle = open_process_handle(pid)?;
     handle.into_process_block()
 }
+
