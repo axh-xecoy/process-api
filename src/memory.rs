@@ -1,4 +1,4 @@
-use crate::{Arch, ProcessBlock};
+use crate::{PointerWidth, ProcessBlock};
 use std::error::Error;
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -7,42 +7,54 @@ use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 
 /// 内存空间
-pub struct MemoryBlock<T:Default, A:Arch>{
+pub struct MemoryBlock<T: Default> {
     handle: HANDLE,
     address_offset: Vec<usize>,
+    pointer_width: PointerWidth,
     _marker: PhantomData<T>,
-    _phantom: PhantomData<A>,
 }
 
-impl<A:Arch> ProcessBlock<A>{
-    pub fn memory_block<T:Default>(&self, address_offset: Vec<usize>) -> MemoryBlock<T,A> {
-        MemoryBlock::new(
-            self.handle,
-            address_offset
-        )
+impl ProcessBlock {
+    pub fn memory_block<T: Default>(&self, address_offset: Vec<usize>) -> MemoryBlock<T> {
+        MemoryBlock::new(self.handle(), address_offset, self.pointer_width())
     }
 }
-unsafe impl<T:Default, A:Arch> Send for MemoryBlock<T, A>{}
 
-impl<T:Default, A:Arch> MemoryBlock<T, A>{
-    pub fn new(handle: HANDLE, address_offset:Vec<usize>) -> Self{
-        if address_offset.len() == 0 {
+unsafe impl<T: Default> Send for MemoryBlock<T> {}
+
+impl<T: Default> MemoryBlock<T> {
+    pub fn new(handle: HANDLE, address_offset: Vec<usize>, pointer_width: PointerWidth) -> Self {
+        if address_offset.is_empty() {
             panic!("内存地址不能为空！");
         }
-        Self{ handle, address_offset, _marker:Default::default(), _phantom: Default::default() }
+        Self {
+            handle,
+            address_offset,
+            pointer_width,
+            _marker: Default::default(),
+        }
     }
 
     ///从内存块读取内容
-    pub fn read(&self) -> Result<T, Box<dyn Error>>{
-        unsafe{
-            read_process_memory::<_,A>(self.handle,&self.address_offset)
+    pub fn read(&self) -> Result<T, Box<dyn Error>> {
+        unsafe {
+            read_process_memory_with_pointer_size::<_>(
+                self.handle,
+                &self.address_offset,
+                self.pointer_width.bytes(),
+            )
         }
     }
 
     ///向内存块写入内容
-    pub fn write(&self, data:T) -> Result<(), Box<dyn Error>>{
-        unsafe{
-            write_process_memory::<_,A>(self.handle,&self.address_offset,data)
+    pub fn write(&self, data: T) -> Result<(), Box<dyn Error>> {
+        unsafe {
+            write_process_memory_with_pointer_size::<_>(
+                self.handle,
+                &self.address_offset,
+                self.pointer_width.bytes(),
+                data,
+            )
         }
     }
 
@@ -52,7 +64,11 @@ impl<T:Default, A:Arch> MemoryBlock<T, A>{
         let last_index = new_offsets.len() - 1;
         new_offsets[last_index] += offset;
         unsafe {
-            read_process_memory::<_,A>(self.handle, &new_offsets)
+            read_process_memory_with_pointer_size::<_>(
+                self.handle,
+                &new_offsets,
+                self.pointer_width.bytes(),
+            )
         }
     }
 
@@ -62,27 +78,30 @@ impl<T:Default, A:Arch> MemoryBlock<T, A>{
         let last_index = new_offsets.len() - 1;
         new_offsets[last_index] += offset;
         unsafe {
-            write_process_memory::<_,A>(self.handle, &new_offsets, data)
+            write_process_memory_with_pointer_size::<_>(
+                self.handle,
+                &new_offsets,
+                self.pointer_width.bytes(),
+                data,
+            )
         }
     }
 }
 
-/// 解析多级指针，返回最终的地址
-unsafe fn resolve_multilevel_pointer<A>(
+unsafe fn resolve_multilevel_pointer_with_size(
     handle: HANDLE,
     address_offset: &[usize],
-) -> Result<usize, Box<dyn Error>>
-where
-    A: Arch,
-{
+    pointer_size: usize,
+) -> Result<usize, Box<dyn Error>> {
     if address_offset.is_empty() {
         panic!("不能传入空地址");
     }
-    let size = size_of::<A>();
+    if pointer_size != 4 && pointer_size != 8 {
+        panic!("不支持的指针大小");
+    }
 
     let mut address = address_offset[0];
 
-    // 如果地址偏移量多于一个，逐级读取指针
     if address_offset.len() > 1 {
         for &offset in &address_offset[1..] {
             let mut address_temp: usize = 0;
@@ -90,7 +109,7 @@ where
                 handle,
                 address as *const c_void,
                 &mut address_temp as *mut usize as *mut c_void,
-                size,
+                pointer_size,
                 None,
             )?;
             address = address_temp + offset;
@@ -99,19 +118,17 @@ where
     Ok(address)
 }
 
-/// 读取进程内存
-pub unsafe fn read_process_memory<T,A>(
+pub unsafe fn read_process_memory_with_pointer_size<T>(
     handle: HANDLE,
-    address_offset: &[usize], // 改为借用
+    address_offset: &[usize],
+    pointer_size: usize,
 ) -> Result<T, Box<dyn Error>>
 where
-    T: Default, // 确保 T 可以被初始化
-    A: Arch,
+    T: Default,
 {
     let t_size = size_of::<T>();
-    let mut result_value: T = Default::default(); // 初始化 T
-    let address = resolve_multilevel_pointer::<A>(handle, address_offset)?; // 传递借用
-    // 读取最终的值
+    let mut result_value: T = Default::default();
+    let address = resolve_multilevel_pointer_with_size(handle, address_offset, pointer_size)?;
     ReadProcessMemory(
         handle,
         address as *const c_void,
@@ -122,18 +139,14 @@ where
     Ok(result_value)
 }
 
-/// 写入进程内存
-pub unsafe fn write_process_memory<T,A>(
+pub unsafe fn write_process_memory_with_pointer_size<T>(
     handle: HANDLE,
-    address_offset: &[usize], // 改为借用
+    address_offset: &[usize],
+    pointer_size: usize,
     value: T,
-) -> Result<(), Box<dyn Error>>
-where
-    A: Arch,
-{
+) -> Result<(), Box<dyn Error>> {
     let t_size = size_of::<T>();
-    let address = resolve_multilevel_pointer::<A>(handle, address_offset)?; // 传递借用
-    // 写入值
+    let address = resolve_multilevel_pointer_with_size(handle, address_offset, pointer_size)?;
     WriteProcessMemory(
         handle,
         address as *const c_void,
